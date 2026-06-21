@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Đo độ dài thật của 24 file audio ngắn (đã sinh bằng `hyperframes tts`,
+Đo độ dài thật của 26 file audio ngắn (đã sinh bằng `hyperframes tts`,
 mỗi file là 1 câu/cụm ngắn để né giới hạn cắt-cụt-văn-bản-dài của Kokoro),
-gộp lại theo 4 nhóm tương ứng 4 cảnh, rồi thay placeholder __D1__..__D4__
+gộp lại theo 5 nhóm tương ứng 5 cảnh, rồi thay placeholder __D1__..__D5__
 và __TOTAL__ trong index.html bằng số thật.
 Chạy SAU bước TTS, TRƯỚC bước lint/render trong workflow.
 """
@@ -10,10 +10,11 @@ import json
 import subprocess
 import sys
 
-# Số file audio thuộc mỗi cảnh, theo đúng thứ tự narration-01..24.
-# Scene 1 (hook+intro+FTC) = 7 chunks, Scene 2 (what we liked) = 8 chunks,
-# Scene 3 (caveat) = 5 chunks, Scene 4 (CTA) = 4 chunks. Tổng = 24.
-SCENE_CHUNK_COUNTS = [7, 8, 5, 4]
+# Số file audio thuộc mỗi cảnh, theo đúng thứ tự narration-01..26.
+# Scene 1 (hook+intro+FTC) = 7, Scene 2 (gallery "A Peek Inside") = 2,
+# Scene 3 (what we liked) = 8, Scene 4 (caveat) = 5, Scene 5 (CTA) = 4.
+# Tổng = 26.
+SCENE_CHUNK_COUNTS = [7, 2, 8, 5, 4]
 
 TOTAL_CHUNKS = sum(SCENE_CHUNK_COUNTS)
 AUDIO_FILES = [f"voice-{i:02d}.wav" for i in range(1, TOTAL_CHUNKS + 1)]
@@ -85,3 +86,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
