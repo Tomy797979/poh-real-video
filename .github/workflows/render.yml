@@ -68,7 +68,7 @@ jobs:
       - name: Measure real narration lengths and sync timeline
         run: python3 scripts/build_timing.py
 
-      - name: Fetch real product cover image (Dropbox first, then scrape, then fallback)
+      - name: Fetch product images (cover + 3 sample pages; Dropbox first, then scrape, then fallback)
         env:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
@@ -76,13 +76,31 @@ jobs:
         run: |
           UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
           URL="${{ github.event.inputs.amazon_url }}"
-          FOUND_IMAGE=false
+
+          dbx_download() {
+            local path="$1"
+            local out="$2"
+            if [ -z "$path" ] || [ -z "$DBX_TOKEN" ]; then
+              return 1
+            fi
+            curl -s -X POST https://content.dropboxapi.com/2/files/download \
+              --header "Authorization: Bearer $DBX_TOKEN" \
+              --header "Dropbox-API-Arg: {\"path\": \"$path\"}" \
+              -o "$out"
+            [ -s "$out" ]
+          }
 
           # Tách ASIN từ link Amazon (vd: .../dp/B0F7FBZNMZ -> B0F7FBZNMZ)
           ASIN=$(echo "$URL" | grep -oP '(?:/dp/|/product/|/gp/product/)\K[A-Z0-9]{10}' | head -1)
           echo "Detected ASIN: ${ASIN:-(none)}"
 
-          # ---- Ưu tiên 1: lấy ảnh đã có sẵn trong Dropbox /amazon/<ASIN>/ ----
+          DBX_TOKEN=""
+          COVER_PATH=""
+          SAMPLE1_PATH=""
+          SAMPLE2_PATH=""
+          SAMPLE3_PATH=""
+
+          # ---- Liệt kê toàn bộ ảnh có sẵn trong Dropbox /amazon/<ASIN>/ ----
           # (thư mục này được tool "Amazon Ảnh" trong Video Merger Pro tự tạo,
           # pipeline trích ảnh đó đáng tin hơn scrape trực tiếp từ máy chủ GitHub)
           if [ -n "$ASIN" ] && [ -n "$DROPBOX_APP_KEY" ] && [ -n "$DROPBOX_APP_SECRET" ] && [ -n "$DROPBOX_REFRESH_TOKEN" ]; then
@@ -101,47 +119,58 @@ jobs:
                 --header "Content-Type: application/json" \
                 --data "{\"path\": \"$DBX_FOLDER\"}")
 
-              FIRST_PATH=$(echo "$LIST_JSON" | python3 -c "import sys, json; e = sorted([x for x in json.load(sys.stdin).get('entries', []) if x.get('.tag') == 'file'], key=lambda x: x.get('name','')); print(e[0]['path_lower'] if e else '')" 2>/dev/null || echo "")
-              if [ -n "$FIRST_PATH" ]; then
-                echo "Found image in Dropbox: $FIRST_PATH"
-                curl -s -X POST https://content.dropboxapi.com/2/files/download \
-                  --header "Authorization: Bearer $DBX_TOKEN" \
-                  --header "Dropbox-API-Arg: {\"path\": \"$FIRST_PATH\"}" \
-                  -o assets/cover.jpg
-                if [ -s assets/cover.jpg ]; then
-                  FOUND_IMAGE=true
-                  echo "Dùng ảnh thật từ Dropbox (đã trích sẵn qua tab Amazon Ảnh)."
-                fi
-              else
-                echo "Chưa thấy ảnh nào trong $DBX_FOLDER -- bạn đã chạy tab Amazon Ảnh cho link này chưa?"
-              fi
+              ALL_PATHS=$(echo "$LIST_JSON" | python3 -c "import sys, json; e = sorted([x for x in json.load(sys.stdin).get('entries', []) if x.get('.tag') == 'file'], key=lambda x: x.get('name','')); print(chr(10).join(x['path_lower'] for x in e))" 2>/dev/null || echo "")
+
+              mapfile -t PATH_ARRAY <<< "$ALL_PATHS"
+              echo "Found ${#PATH_ARRAY[@]} file(s) in $DBX_FOLDER"
+              COVER_PATH="${PATH_ARRAY[0]:-}"
+              SAMPLE1_PATH="${PATH_ARRAY[1]:-}"
+              SAMPLE2_PATH="${PATH_ARRAY[2]:-}"
+              SAMPLE3_PATH="${PATH_ARRAY[3]:-}"
             else
               echo "Không lấy được Dropbox access token -- kiểm tra lại 3 Secrets."
             fi
           fi
 
-          # ---- Ưu tiên 2: scrape og:image trực tiếp từ trang Amazon ----
-          if [ "$FOUND_IMAGE" = "false" ]; then
-            echo "Dropbox chưa có ảnh -- thử scrape trực tiếp trang Amazon..."
+          # ---- Ảnh bìa: Dropbox -> scrape trực tiếp -> khối màu ----
+          COVER_FOUND=false
+          if dbx_download "$COVER_PATH" assets/cover.jpg; then
+            COVER_FOUND=true
+            echo "Cover: dùng ảnh thật từ Dropbox ($COVER_PATH)."
+          else
+            echo "Cover: Dropbox chưa có -- thử scrape trực tiếp trang Amazon..."
             curl -sL -A "$UA" -H "Accept-Language: en-US,en;q=0.9" "$URL" -o product_page.html || true
             IMG_URL=""
             if [ -s product_page.html ]; then
               IMG_URL=$(grep -oP '(?<=property="og:image" content=")[^"]+' product_page.html | head -1)
             fi
             if [ -n "$IMG_URL" ]; then
-              echo "Found image URL via scrape: $IMG_URL"
               curl -sL -A "$UA" "$IMG_URL" -o assets/cover.jpg || true
-              [ -s assets/cover.jpg ] && FOUND_IMAGE=true
+              [ -s assets/cover.jpg ] && COVER_FOUND=true
             fi
           fi
-
-          # ---- Dự phòng cuối: khối màu brand, không để composition vỡ layout ----
-          if [ "$FOUND_IMAGE" = "false" ]; then
-            echo "Không lấy được ảnh thật (cả Dropbox lẫn scrape) -- dùng khối màu thay thế."
+          if [ "$COVER_FOUND" = "false" ]; then
+            echo "Cover: không lấy được ảnh thật -- dùng khối màu thay thế."
             ffmpeg -f lavfi -i color=c=0x4A1F42:s=900x900 -frames:v 1 -y assets/cover.jpg
-            echo "::warning::Không lấy được ảnh thật từ Dropbox lẫn Amazon -- video dùng khối màu plum thay thế. Hãy chạy tab Amazon Ảnh trong Video Merger Pro trước khi Run workflow."
-          else
-            echo "Cover image ready."
+            echo "::warning::Không lấy được ảnh bìa thật (Dropbox lẫn scrape Amazon đều thất bại) -- dùng khối màu thay thế."
+          fi
+
+          # ---- 3 ảnh mẫu cho cảnh "A Peek Inside": Dropbox -> khối màu ----
+          # (không có nguồn scrape thay thế cho ảnh trang ruột, nên fallback thẳng khối màu)
+          SAMPLE_PATHS=("$SAMPLE1_PATH" "$SAMPLE2_PATH" "$SAMPLE3_PATH")
+          SAMPLE_COLORS=("0xC8A656" "0x6B5F54" "0x371531")
+          for i in 0 1 2; do
+            n=$((i + 1))
+            if dbx_download "${SAMPLE_PATHS[$i]}" "assets/sample${n}.jpg"; then
+              echo "Sample $n: dùng ảnh thật từ Dropbox (${SAMPLE_PATHS[$i]})."
+            else
+              echo "Sample $n: chưa có ảnh trong Dropbox -- dùng khối màu thay thế."
+              ffmpeg -f lavfi -i color=c=${SAMPLE_COLORS[$i]}:s=900x900 -frames:v 1 -y "assets/sample${n}.jpg"
+            fi
+          done
+
+          if [ -z "$SAMPLE1_PATH" ] && [ -z "$SAMPLE2_PATH" ] && [ -z "$SAMPLE3_PATH" ]; then
+            echo "::warning::Không có ảnh mẫu nào trong $DBX_FOLDER ngoài ảnh bìa -- cảnh 'A Peek Inside' đang dùng khối màu thay thế. Hãy chạy tab Amazon Ảnh trong Video Merger Pro để có đủ ảnh trang ruột."
           fi
 
       - name: Lint composition
