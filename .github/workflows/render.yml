@@ -11,6 +11,11 @@ on:
         required: false
         default: "https://www.amazon.com/Simple-Christian-Devotional-Relaxation-Reflections/dp/B0F7FBZNMZ"
         type: string
+      dropbox_filename:
+        description: "Tên file khi lưu vào Dropbox (không cần .mp4)"
+        required: false
+        default: "simple-christian-review"
+        type: string
 
 jobs:
   render:
@@ -95,6 +100,48 @@ jobs:
 
       - name: Render to MP4
         run: npx hyperframes render -o output.mp4
+
+      - name: Upload video to Dropbox
+        env:
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+        run: |
+          if [ -z "$DROPBOX_APP_KEY" ] || [ -z "$DROPBOX_APP_SECRET" ] || [ -z "$DROPBOX_REFRESH_TOKEN" ]; then
+            echo "::warning::Thiếu DROPBOX_APP_KEY / DROPBOX_APP_SECRET / DROPBOX_REFRESH_TOKEN trong Secrets -- bỏ qua bước upload Dropbox. Video vẫn có trong Artifacts."
+            exit 0
+          fi
+
+          ACCESS_TOKEN=$(curl -s https://api.dropbox.com/oauth2/token \
+            -d grant_type=refresh_token \
+            -d refresh_token="$DROPBOX_REFRESH_TOKEN" \
+            -d client_id="$DROPBOX_APP_KEY" \
+            -d client_secret="$DROPBOX_APP_SECRET" \
+            | python3 -c "import sys, json; d = json.load(sys.stdin); print(d.get('access_token',''))")
+
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "::error::Không lấy được access token từ Dropbox -- kiểm tra lại 3 Secrets (App Key / App Secret / Refresh Token)."
+            exit 1
+          fi
+
+          RAW_NAME="${{ github.event.inputs.dropbox_filename }}"
+          SAFE_NAME="${RAW_NAME:-simple-christian-review}"
+          STAMP=$(date +%Y%m%d-%H%M%S)
+          DROPBOX_PATH="/${SAFE_NAME}-${STAMP}.mp4"
+
+          echo "Uploading to Dropbox path: $DROPBOX_PATH"
+          HTTP_CODE=$(curl -s -o upload_response.json -w "%{http_code}" -X POST https://content.dropboxapi.com/2/files/upload \
+            --header "Authorization: Bearer $ACCESS_TOKEN" \
+            --header "Dropbox-API-Arg: {\"path\": \"$DROPBOX_PATH\",\"mode\": \"add\",\"autorename\": true,\"mute\": false}" \
+            --header "Content-Type: application/octet-stream" \
+            --data-binary @output.mp4)
+
+          cat upload_response.json
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Dropbox upload thất bại (HTTP $HTTP_CODE). Xem chi tiết log ở trên. Video vẫn có trong Artifacts."
+            exit 1
+          fi
+          echo "Đã upload thành công lên Dropbox: $DROPBOX_PATH"
 
       - name: Upload rendered video
         uses: actions/upload-artifact@v4
