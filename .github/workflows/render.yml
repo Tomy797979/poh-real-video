@@ -50,6 +50,16 @@ jobs:
             npx hyperframes tts "$f" -o "voice-${n}.wav" -v af_heart
           done
 
+      - name: Concatenate narration chunks into a single audio file
+        run: |
+          : > concat-list.txt
+          for f in voice-*.wav; do
+            echo "file '$f'" >> concat-list.txt
+          done
+          cat concat-list.txt
+          ffmpeg -f concat -safe 0 -i concat-list.txt -c:a pcm_s16le -ar 24000 -ac 1 -y narration-full.wav
+          ffprobe -v quiet -show_entries format=duration -of default=noprint_wrappers=1 narration-full.wav
+
       - name: Measure real narration lengths and sync timeline
         run: python3 scripts/build_timing.py
 
@@ -97,5 +107,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: narration-audio
-          path: voice-*.wav
+          path: |
+            voice-*.wav
+            narration-full.wav
           retention-days: 14
