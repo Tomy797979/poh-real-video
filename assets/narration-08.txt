@@ -1,1 +1,0 @@
-First thing, every page is printed on one side only.
